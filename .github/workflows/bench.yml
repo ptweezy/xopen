@@ -9,9 +9,13 @@ permissions:
   contents: read
 
 jobs:
-  bench:
-    runs-on: macos-latest
-    timeout-minutes: 45
+  backends:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-24.04-arm, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@v7
       with:
@@ -19,27 +23,7 @@ jobs:
     - uses: actions/setup-python@v7
       with:
         python-version: "3.14"
-    - name: Create environments
+    - name: Benchmark gzip backends
       run: |
-        python -m venv base
-        base/bin/pip install -q "xopen @ git+https://github.com/pycompression/xopen@main"
-        python -m venv pr
-        pr/bin/pip install -q "xopen @ git+https://github.com/ptweezy/xopen@isal-macos-arm64"
-        base/bin/pip list
-        pr/bin/pip list
-    - name: Benchmark without pigz
-      run: |
-        if which pigz; then brew uninstall --ignore-dependencies pigz || true; fi
-        python bench/bench.py base/bin/python pr/bin/python
-    - name: Benchmark with pigz
-      run: |
-        brew install pigz
-        python bench/bench.py base/bin/python pr/bin/python
-    - name: Run the xopen test suite with python-isal on arm64
-      run: |
-        brew install pbzip2 isa-l zstd lz4 || true
-        git clone -q --branch isal-macos-arm64 https://github.com/ptweezy/xopen pr-src
-        cd pr-src
-        ../pr/bin/pip install -q pytest pytest-timeout
-        ../pr/bin/python -c "import xopen; assert xopen.igzip is not None"
-        ../pr/bin/python -m pytest -q tests
+        python -m pip install -q isal==1.9.1 zlib-ng==1.1.0
+        python bench/backends.py
