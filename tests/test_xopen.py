@@ -11,13 +11,15 @@ import os
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from xopen import _detect_format_from_content, xopen
+from xopen import _detect_format_from_content, _use_isal, xopen
 
 if sys.version_info >= (3, 14):
     from compression import zstd
@@ -430,6 +432,89 @@ def test_write_gzip_no_threads_no_isal(tmp_path, xopen_without_igzip):
             assert isinstance(f, gzip.GzipFile), f
         else:
             assert isinstance(f.raw, gzip.GzipFile)
+
+
+def _gzip_backend(f) -> str:
+    """Return the top-level module of the gzip file object that xopen returned"""
+    if isinstance(f, (io.BufferedReader, io.BufferedWriter)):
+        f = f.raw
+    return type(f).__module__.split(".")[0]
+
+
+def _set_architecture(monkeypatch, platform: str, machine: str) -> None:
+    """
+    Set sys.platform, and the machine that _use_isal() gets from os.uname(),
+    or from sysconfig.get_platform() on Windows
+    """
+    monkeypatch.setattr(sys, "platform", platform)
+    if platform == "win32":
+        monkeypatch.setattr(sysconfig, "get_platform", lambda: machine)
+    else:
+        uname = SimpleNamespace(machine=machine)
+        # os.uname does not exist on Windows
+        monkeypatch.setattr(os, "uname", lambda: uname, raising=False)
+
+
+@pytest.mark.parametrize(
+    ["platform", "machine", "expected"],
+    [
+        ("linux", "x86_64", True),
+        ("linux", "aarch64", False),
+        ("darwin", "x86_64", True),
+        ("darwin", "arm64", False),
+        ("freebsd15", "amd64", True),
+        ("win32", "win-amd64", True),
+        ("win32", "win-arm64", False),
+    ],
+)
+def test_use_isal_depends_on_architecture_for_reading(
+    monkeypatch, platform, machine, expected
+):
+    _set_architecture(monkeypatch, platform, machine)
+    assert _use_isal("rb", 1) is expected
+    assert _use_isal("wb", 1) is True
+
+
+@pytest.mark.parametrize("threads", [0, 1])
+@pytest.mark.parametrize(
+    ["machine", "expected"], [("x86_64", "isal"), ("aarch64", "zlib_ng")]
+)
+def test_gzip_read_backend_depends_on_architecture(
+    monkeypatch, threads, machine, expected
+):
+    import xopen  # xopen local overrides xopen global variable
+
+    if xopen.igzip is None or xopen.gzip_ng is None:
+        pytest.skip("requires python-isal and python-zlib-ng")
+    _set_architecture(monkeypatch, "linux", machine)
+    with xopen.xopen(TEST_DIR / "file.txt.gz", "rb", threads=threads) as f:
+        assert _gzip_backend(f) == expected
+        assert f.read() == CONTENT.encode()
+
+
+def test_gzip_read_without_zlib_ng_where_isal_is_slower(monkeypatch):
+    import xopen  # xopen local overrides xopen global variable
+
+    _set_architecture(monkeypatch, "linux", "aarch64")
+    monkeypatch.setattr(xopen, "gzip_ng", None)
+    with xopen.xopen(TEST_DIR / "file.txt.gz", "rb", threads=0) as f:
+        assert type(f) is gzip.GzipFile
+        assert f.read() == CONTENT.encode()
+
+
+@pytest.mark.parametrize("threads", [0, 1])
+@pytest.mark.parametrize("machine", ["x86_64", "aarch64"])
+def test_gzip_write_backend_at_level_1_is_isal(tmp_path, monkeypatch, threads, machine):
+    import xopen  # xopen local overrides xopen global variable
+
+    if xopen.igzip is None:
+        pytest.skip("requires python-isal")
+    _set_architecture(monkeypatch, "linux", machine)
+    path = tmp_path / "out.gz"
+    with xopen.xopen(path, "wb", compresslevel=1, threads=threads) as f:
+        assert _gzip_backend(f) == "isal"
+        f.write(b"hello")
+    assert gzip.decompress(path.read_bytes()) == b"hello"
 
 
 def test_write_stdout():
