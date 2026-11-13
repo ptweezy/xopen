@@ -196,6 +196,10 @@ development version
   on Windows before (and only sometimes).
 * Dropped support for Python 3.10
 * Started supporting Python 3.15
+* python-isal is now also installed and used on macOS with Apple Silicon
+  (``arm64``). python-isal 1.9.0 or later is required there because earlier
+  versions used the portable C code of ISA-L instead of its aarch64 assembly
+  on that platform.
 
 v2.1.0 (2026-06-03)
 ~~~~~~~~~~~~~~~~~~~
