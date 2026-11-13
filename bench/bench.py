@@ -1,4 +1,4 @@
-"""Compare two virtualenvs (xopen without and with python-isal) on FASTQ-like data."""
+"""Compare xopen in two virtualenvs (base and PR) on FASTQ data."""
 import gzip
 import os
 import platform
@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 ROUNDS = 7
-RECORDS = 700_000  # about 230 MB of FASTQ
+RECORDS = 700_000  # about 220 MB of FASTQ
 
 
 def make_fastq(path):
@@ -32,11 +32,44 @@ def run(python, op, path, threads, *extra):
     return float(out[0]), float(out[1])
 
 
+def table(title, base, pr, gz, raw):
+    size = os.path.getsize(raw)
+    print(f"\n### {title}: {size / 1e6:.0f} MB FASTQ, {os.path.getsize(gz) / 1e6:.0f} MB gzipped")
+    cases = [
+        ("read", "default", gz), ("read", "0", gz),
+        ("lines", "default", gz), ("lines", "0", gz),
+        ("write", "default", "out.gz"), ("write", "0", "out.gz"),
+    ]
+    print("| operation | threads | base MB/s | PR MB/s | speedup | base CPU s | PR CPU s | base out MB | PR out MB |")
+    print("|---|---|---:|---:|---:|---:|---:|---:|---:|")
+    mb = size / 1e6
+    for op, threads, path in cases:
+        res = {"base": ([], []), "pr": ([], [])}
+        out_size = {}
+        extra = (raw,) if op == "write" else ()
+        for _ in range(ROUNDS):  # alternate base and PR
+            for name, py in (("base", base), ("pr", pr)):
+                w, c = run(py, op, path, threads, *extra)
+                res[name][0].append(w)
+                res[name][1].append(c)
+                if op == "write":
+                    out_size[name] = os.path.getsize(path) / 1e6
+        bw, bc = (statistics.median(x) for x in res["base"])
+        pw, pc = (statistics.median(x) for x in res["pr"])
+        sizes = f"{out_size['base']:.1f} | {out_size['pr']:.1f}" if op == "write" else " | "
+        print(f"| {op} | {threads} | {mb / bw:.0f} | {mb / pw:.0f} | {bw / pw:.2f}x | {bc:.2f} | {pc:.2f} | {sizes} |")
+
+
 def main():
     base, pr = sys.argv[1], sys.argv[2]
+    real = sys.argv[3] if len(sys.argv) > 3 else None
     print("machine:", platform.machine(), platform.platform())
-    print("cpu:", subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"],
-                                 capture_output=True, text=True).stdout.strip())
+    if sys.platform == "darwin":
+        print("cpu:", subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"],
+                                     capture_output=True, text=True).stdout.strip())
+    else:
+        print("cpu:", subprocess.run("lscpu | grep -E 'Model name|Vendor ID' | tr -s ' ' | tr '\n' ' '",
+                                     shell=True, capture_output=True, text=True).stdout.strip())
     print("pigz:", shutil.which("pigz"), "| gzip:", shutil.which("gzip"))
     for name, py in (("base", base), ("pr", pr)):
         mods = subprocess.run(
@@ -46,35 +79,20 @@ def main():
             capture_output=True, text=True, check=True).stdout.strip()
         print(f"{name}: {mods}")
 
-    raw = "data.fastq"
+    raw = "synthetic.fastq"
     make_fastq(raw)
-    size = os.path.getsize(raw)
-    gz = "data.fastq.gz"
+    gz = "synthetic.fastq.gz"
     with open(raw, "rb") as src, gzip.open(gz, "wb", compresslevel=6) as dst:
         shutil.copyfileobj(src, dst, 1 << 20)
-    print(f"data: {size / 1e6:.0f} MB FASTQ, {os.path.getsize(gz) / 1e6:.0f} MB as gzip -6")
+    table("synthetic FASTQ (gzip -6)", base, pr, gz, raw)
 
-    cases = [
-        ("read", "default", gz), ("read", "0", gz),
-        ("lines", "default", gz), ("lines", "0", gz),
-        ("write", "default", "out.gz"), ("write", "0", "out.gz"),
-    ]
-    print("| operation | threads | base wall s | PR wall s | speedup | base CPU s | PR CPU s | base size MB | PR size MB |")
-    print("|---|---|---:|---:|---:|---:|---:|---:|---:|")
-    for op, threads, path in cases:
-        res = {}
-        for name, py in (("base", base), ("pr", pr)):
-            walls, cpus = [], []
-            extra = (raw,) if op == "write" else ()
-            for _ in range(ROUNDS):
-                w, c = run(py, op, path, threads, *extra)
-                walls.append(w)
-                cpus.append(c)
-            out_size = os.path.getsize(path) / 1e6 if op == "write" else float("nan")
-            res[name] = (statistics.median(walls), statistics.median(cpus), out_size)
-        b, p = res["base"], res["pr"]
-        sizes = f"{b[2]:.1f} | {p[2]:.1f}" if op == "write" else "| "
-        print(f"| {op} | {threads} | {b[0]:.2f} | {p[0]:.2f} | {b[0] / p[0]:.2f}x | {b[1]:.2f} | {p[1]:.2f} | {sizes} |")
+    if real and os.path.exists(real) and os.path.getsize(real) > 1_000_000:
+        raw = "real.fastq"
+        with gzip.open(real, "rb") as src, open(raw, "wb") as dst:
+            shutil.copyfileobj(src, dst, 1 << 20)
+        table("real FASTQ " + os.path.basename(real) + " (as published)", base, pr, real, raw)
+    else:
+        print("\n(no real FASTQ available)")
 
 
 main()

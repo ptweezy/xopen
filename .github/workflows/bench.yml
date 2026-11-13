@@ -9,13 +9,13 @@ permissions:
   contents: read
 
 jobs:
-  backends:
+  bench:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-24.04-arm, ubuntu-latest]
+        os: [ubuntu-24.04-arm, macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
     - uses: actions/checkout@v7
       with:
@@ -23,7 +23,41 @@ jobs:
     - uses: actions/setup-python@v7
       with:
         python-version: "3.14"
-    - name: Benchmark gzip backends
+    - name: Create environments
       run: |
-        python -m pip install -q isal==1.9.1 zlib-ng==1.1.0
-        python bench/backends.py
+        python -m venv base
+        base/bin/pip install -q "xopen @ git+https://github.com/pycompression/xopen@main"
+        python -m venv pr
+        pr/bin/pip install -q "xopen @ git+https://github.com/ptweezy/xopen@gzip-backend-per-arch"
+        base/bin/pip list
+        pr/bin/pip list
+    - name: Download a real FASTQ file (E. coli, Illumina, ENA run SRR2589044)
+      run: |
+        curl -fsSL --retry 3 --max-time 600 -o SRR2589044_1.fastq.gz \
+          https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR258/004/SRR2589044/SRR2589044_1.fastq.gz || true
+        ls -l SRR2589044_1.fastq.gz || true
+    - name: Benchmark
+      run: python bench/bench.py base/bin/python pr/bin/python SRR2589044_1.fastq.gz
+    - name: Benchmark with pigz installed (macOS only; Linux never reaches pigz)
+      if: runner.os == 'macOS'
+      run: |
+        brew install pigz
+        python bench/bench.py base/bin/python pr/bin/python SRR2589044_1.fastq.gz
+
+  test-arm:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+    - run: sudo apt-get install -y pigz pbzip2 isal zstd lz4
+    - uses: actions/checkout@v7
+      with:
+        repository: ptweezy/xopen
+        ref: gzip-backend-per-arch
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: actions/setup-python@v7
+      with:
+        python-version: "3.14"
+    - run: python -m pip install tox
+    - run: tox run -e 3.14
+    - run: tox run -e no-libs
