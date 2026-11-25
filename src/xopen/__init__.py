@@ -18,6 +18,7 @@ import signal
 import stat
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import threading
 import time
@@ -577,8 +578,6 @@ def _use_isal(mode: str, compresslevel: int) -> bool:
             # The architecture that Python, and so python-isal, was compiled
             # for. platform.machine() takes tens of milliseconds on Windows
             # and returns the architecture of the CPU instead.
-            import sysconfig
-
             return sysconfig.get_platform() == "win-amd64"
         return os.uname().machine in ("x86_64", "amd64")
     # Igzip level 0 does not output uncompressed deflate blocks as zlib does
